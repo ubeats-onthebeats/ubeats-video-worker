@@ -161,10 +161,15 @@ def wrap_text(text, max_chars_per_line=16):
 def generate_variant_gancho(
     input_path, output_path, gancho_texto,
     duracion_gancho=3.0, font_size=42, y_pos="h*0.15",
-    crf=20, preset="veryfast",
+    crf=20, preset="veryfast", max_width=720,
 ):
     texto_envuelto = wrap_text(gancho_texto)
     texto_escapado = escape_drawtext(texto_envuelto)
+
+    # Downscale primero, igual que en build_filter_chain() para /procesar:
+    # con videos reales (ej. 1080x1920 de celular) sin este downscale libx264
+    # + drawtext pican de memoria y Railway mata el proceso (OOM, returncode -9).
+    scale_filter = f"scale='min({max_width},iw)':'-2'"
 
     drawtext_filter = (
         f"drawtext=fontfile={FONT_PATH}:"
@@ -178,8 +183,9 @@ def generate_variant_gancho(
 
     cmd = [
         "ffmpeg", "-y",
+        "-threads", "1",  # limita picos de memoria en contenedores chicos (Railway starter)
         "-i", input_path,
-        "-vf", drawtext_filter,
+        "-vf", f"{scale_filter},{drawtext_filter}",
         "-c:v", "libx264",
         "-preset", preset,
         "-crf", str(crf),
@@ -356,6 +362,10 @@ def run_job_ganchos(job_id, video_url, ganchos, duracion, font_size, crf, preset
             jobs[job_id].setdefault("errores_variantes", []).append(
                 {"gancho": gancho_texto, "detalle": err}
             )
+            # Sin este aviso, la fila de esa variante se queda en "procesando"
+            # para siempre en la web (nunca recibe un callback que la mueva a
+            # 'lista' ni a 'error').
+            notify_callback(job_id, {"estado": "error_variante", "gancho": gancho_texto, "error": err})
 
     jobs[job_id]["estado"] = "listo"
     jobs[job_id]["variantes"] = variantes
