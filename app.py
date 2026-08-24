@@ -22,8 +22,14 @@ from pathlib import Path
 
 import requests
 from flask import Flask, jsonify, request
+from PIL import Image, ImageDraw, ImageFont
 
 FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+# Fuente de los ganchos: se renderiza como imagen con Pillow (ver
+# build_caption_overlay) en vez de con el filtro drawtext de ffmpeg, porque
+# drawtext solo puede dibujar UN rectángulo recto que cubre todo el bloque de
+# texto — acá queremos una caja negra con esquinas redondeadas por línea.
+CAPTION_FONT_PATH = "/usr/share/fonts/truetype/poppins/Poppins-ExtraBold.ttf"
 
 app = Flask(__name__)
 
@@ -132,15 +138,6 @@ def slugify(text, max_len=30):
     return text.strip("_")[:max_len].lower() or "gancho"
 
 
-def escape_drawtext(text):
-    """Escapa caracteres especiales para el filtro drawtext de ffmpeg."""
-    return (
-        text.replace("\\", "\\\\")
-        .replace(":", "\\:")
-        .replace("'", "’")  # comilla simple -> tipográfica, más simple que escapar
-    )
-
-
 def wrap_text(text, max_chars_per_line=16):
     """Parte el texto en líneas para que no se corte en los bordes del video."""
     words = text.split()
@@ -158,34 +155,71 @@ def wrap_text(text, max_chars_per_line=16):
     return "\n".join(lines)
 
 
+def build_caption_overlay(
+    gancho_texto, out_path,
+    font_size=54, max_chars_per_line=22,
+    text_color=(255, 255, 255, 255), box_color=(0, 0, 0, 178),
+    pad_x=26, pad_y=16, line_gap=12, corner_radius=20,
+):
+    """Renderiza el gancho como PNG transparente: una caja negra con esquinas
+    redondeadas pegada a CADA línea de texto (look estilo captions de Reels/TikTok),
+    en vez del rectángulo recto único que hace drawtext de ffmpeg. Se guarda en
+    out_path y se superpone al video después con el filtro overlay."""
+    lineas = wrap_text(gancho_texto, max_chars_per_line=max_chars_per_line).split("\n")
+    font = ImageFont.truetype(CAPTION_FONT_PATH, font_size)
+
+    tmp_draw = ImageDraw.Draw(Image.new("RGBA", (10, 10)))
+    line_boxes = []  # (ancho_texto, alto_texto, bbox)
+    for linea in lineas:
+        bbox = tmp_draw.textbbox((0, 0), linea, font=font)
+        line_boxes.append((bbox[2] - bbox[0], bbox[3] - bbox[1], bbox))
+
+    ancho_total = max(w for w, h, _ in line_boxes) + pad_x * 2
+    alto_total = sum(h + pad_y * 2 for w, h, _ in line_boxes) + line_gap * (len(lineas) - 1)
+
+    img = Image.new("RGBA", (int(ancho_total), int(alto_total)), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    y = 0
+    for (ancho_txt, alto_txt, bbox), linea in zip(line_boxes, lineas):
+        box_w = ancho_txt + pad_x * 2
+        box_h = alto_txt + pad_y * 2
+        box_x = (ancho_total - box_w) / 2
+        draw.rounded_rectangle(
+            [box_x, y, box_x + box_w, y + box_h],
+            radius=corner_radius, fill=box_color,
+        )
+        # bbox[0]/bbox[1] son el offset que deja el propio glyph (ascenders,
+        # side-bearing) — hay que restarlo para que el texto quede centrado
+        # de verdad dentro de la caja.
+        draw.text((box_x + pad_x - bbox[0], y + pad_y - bbox[1]), linea, font=font, fill=text_color)
+        y += box_h + line_gap
+
+    img.save(out_path)
+
+
 def generate_variant_gancho(
     input_path, output_path, gancho_texto,
-    duracion_gancho=3.0, font_size=42, y_pos="h*0.15",
+    duracion_gancho=3.0, font_size=54, y_pos_pct=0.42,
     crf=20, preset="veryfast", max_width=720,
 ):
-    texto_envuelto = wrap_text(gancho_texto)
-    texto_escapado = escape_drawtext(texto_envuelto)
+    overlay_path = f"{output_path}.overlay.png"
+    build_caption_overlay(gancho_texto, overlay_path, font_size=font_size)
 
     # Downscale primero, igual que en build_filter_chain() para /procesar:
-    # con videos reales (ej. 1080x1920 de celular) sin este downscale libx264
-    # + drawtext pican de memoria y Railway mata el proceso (OOM, returncode -9).
-    scale_filter = f"scale='min({max_width},iw)':'-2'"
-
-    drawtext_filter = (
-        f"drawtext=fontfile={FONT_PATH}:"
-        f"text='{texto_escapado}':"
-        f"fontsize={font_size}:fontcolor=white:"
-        f"line_spacing=10:"
-        f"box=1:boxcolor=black@0.6:boxborderw=24:"
-        f"x=(w-text_w)/2:y={y_pos}:"
-        f"enable='between(t,0,{duracion_gancho})'"
+    # con videos reales (ej. 1080x1920 de celular) sin este downscale, escalar +
+    # componer la imagen encima pica de memoria y Railway mata el proceso (OOM).
+    filter_complex = (
+        f"[0:v]scale='min({max_width},iw)':'-2'[base];"
+        f"[base][1:v]overlay=(W-w)/2:H*{y_pos_pct}:enable='between(t,0,{duracion_gancho})'"
     )
 
     cmd = [
         "ffmpeg", "-y",
         "-threads", "1",  # limita picos de memoria en contenedores chicos (Railway starter)
         "-i", input_path,
-        "-vf", f"{scale_filter},{drawtext_filter}",
+        "-i", overlay_path,
+        "-filter_complex", filter_complex,
         "-c:v", "libx264",
         "-preset", preset,
         "-crf", str(crf),
@@ -197,6 +231,12 @@ def generate_variant_gancho(
     err_detail = result.stderr.decode(errors="ignore")[-800:]
     if result.returncode != 0:
         err_detail = f"[returncode={result.returncode}] {err_detail}"
+
+    try:
+        os.remove(overlay_path)
+    except OSError:
+        pass
+
     return result.returncode == 0, err_detail
 
 
