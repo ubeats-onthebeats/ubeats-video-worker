@@ -115,23 +115,45 @@ def file_md5(path):
 
 
 def download_video(url, dest_path):
-    r = requests.get(url, stream=True, timeout=60)
+    session = requests.Session()
+    r = session.get(url, stream=True, timeout=60)
     r.raise_for_status()
 
     content_type = r.headers.get("Content-Type", "")
+
+    # Google Drive: si el archivo es grande, en vez del archivo devuelve una
+    # página HTML de confirmación ("no se puede escanear por virus"). Hay que
+    # reenviar la request con el confirm token que viene en esa página/cookies.
+    if "text/html" in content_type and "drive.google.com" in url:
+        confirm_token = None
+        for key, value in r.cookies.items():
+            if key.startswith("download_warning"):
+                confirm_token = value
+                break
+
+        if not confirm_token:
+            # Buscarlo en el body de la respuesta (formato alternativo de Drive)
+            import re
+            match = re.search(r"confirm=([0-9A-Za-z_]+)", r.text)
+            if match:
+                confirm_token = match.group(1)
+
+        if confirm_token:
+            r = session.get(url, params={"confirm": confirm_token}, stream=True, timeout=60)
+            r.raise_for_status()
+            content_type = r.headers.get("Content-Type", "")
+
     if "text/html" in content_type:
         raise ValueError(
             "La URL devolvió una página HTML en vez de un video. "
-            "Si es un link de Google Drive, probablemente necesita el token de "
-            "confirmación de archivos grandes (usá un link de descarga directa real, "
-            "o subí el video a un hosting simple sin esa verificación)."
+            "Verificá que el archivo esté compartido como 'Cualquiera con el enlace' "
+            "o usá un hosting sin verificación intermedia."
         )
 
     with open(dest_path, "wb") as f:
         for chunk in r.iter_content(chunk_size=8192):
             f.write(chunk)
 
-    # Verificación extra: el archivo tiene que pesar más que una página HTML típica
     if dest_path.stat().st_size < 20000:
         raise ValueError(
             f"El archivo descargado es sospechosamente chico ({dest_path.stat().st_size} bytes) "
