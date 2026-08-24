@@ -157,9 +157,9 @@ def wrap_text(text, max_chars_per_line=16):
 
 def build_caption_overlay(
     gancho_texto, out_path,
-    font_size=54, max_chars_per_line=22,
+    font_size=54, max_chars_per_line=19,
     text_color=(255, 255, 255, 255), box_color=(0, 0, 0, 178),
-    pad_x=26, pad_y=16, line_gap=12, corner_radius=20,
+    pad_x=40, pad_y=26, line_gap=14, corner_radius=20,
 ):
     """Renderiza el gancho como PNG transparente: una caja negra con esquinas
     redondeadas pegada a CADA línea de texto (look estilo captions de Reels/TikTok),
