@@ -16,11 +16,14 @@ import random
 import subprocess
 import threading
 import time
+import unicodedata
 import uuid
 from pathlib import Path
 
 import requests
 from flask import Flask, jsonify, request
+
+FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 app = Flask(__name__)
 
@@ -106,6 +109,81 @@ def generate_variant(input_path, output_path, params, crf=20, preset="veryfast")
         "-map_metadata", "-1",
         "-metadata", f"creation_time={int(time.time())}",
         "-metadata", f"comment={uuid.uuid4().hex}",
+        output_path,
+    ]
+
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    err_detail = result.stderr.decode(errors="ignore")[-800:]
+    if result.returncode != 0:
+        err_detail = f"[returncode={result.returncode}] {err_detail}"
+    return result.returncode == 0, err_detail
+
+
+# ---------------------------------------------------------------------
+# Lógica de ganchos (misma base que generar_ganchos.py) — cada salida es un
+# video con un mensaje de apertura DISTINTO quemado como overlay de texto,
+# para testear qué gancho retiene mejor. Contenido real y perceptible, no
+# una copia disfrazada del mismo mensaje.
+# ---------------------------------------------------------------------
+
+def slugify(text, max_len=30):
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    text = "".join(c if c.isalnum() else "_" for c in text)
+    return text.strip("_")[:max_len].lower() or "gancho"
+
+
+def escape_drawtext(text):
+    """Escapa caracteres especiales para el filtro drawtext de ffmpeg."""
+    return (
+        text.replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", "’")  # comilla simple -> tipográfica, más simple que escapar
+    )
+
+
+def wrap_text(text, max_chars_per_line=16):
+    """Parte el texto en líneas para que no se corte en los bordes del video."""
+    words = text.split()
+    lines = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if len(candidate) > max_chars_per_line and current:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return "\n".join(lines)
+
+
+def generate_variant_gancho(
+    input_path, output_path, gancho_texto,
+    duracion_gancho=3.0, font_size=42, y_pos="h*0.15",
+    crf=20, preset="veryfast",
+):
+    texto_envuelto = wrap_text(gancho_texto)
+    texto_escapado = escape_drawtext(texto_envuelto)
+
+    drawtext_filter = (
+        f"drawtext=fontfile={FONT_PATH}:"
+        f"text='{texto_escapado}':"
+        f"fontsize={font_size}:fontcolor=white:"
+        f"line_spacing=10:"
+        f"box=1:boxcolor=black@0.6:boxborderw=24:"
+        f"x=(w-text_w)/2:y={y_pos}:"
+        f"enable='between(t,0,{duracion_gancho})'"
+    )
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", input_path,
+        "-vf", drawtext_filter,
+        "-c:v", "libx264",
+        "-preset", preset,
+        "-crf", str(crf),
+        "-c:a", "copy",  # el audio no cambia, solo el overlay visual
         output_path,
     ]
 
@@ -235,6 +313,55 @@ def run_job(job_id, video_url, cantidad, crf, preset):
     notify_callback(job_id, {"estado": "listo", "variantes": variantes})
 
 
+def run_job_ganchos(job_id, video_url, ganchos, duracion, font_size, crf, preset):
+    job_dir = Path(STORAGE_DIR) / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    input_path = job_dir / "original.mp4"
+
+    jobs[job_id]["estado"] = "descargando"
+    try:
+        download_video(video_url, input_path)
+    except Exception as e:
+        jobs[job_id]["estado"] = "error"
+        jobs[job_id]["error"] = f"Error descargando video: {e}"
+        notify_callback(job_id, {"estado": "error", "error": jobs[job_id]["error"]})
+        return
+
+    jobs[job_id]["estado"] = "procesando"
+    variantes = []
+
+    for i, gancho_texto in enumerate(ganchos, start=1):
+        out_name = f"gancho_{i}_{slugify(gancho_texto)}_{uuid.uuid4().hex[:6]}.mp4"
+        out_path = job_dir / out_name
+
+        ok, err = generate_variant_gancho(
+            str(input_path), str(out_path), gancho_texto,
+            duracion_gancho=duracion, font_size=font_size, crf=crf, preset=preset,
+        )
+
+        if ok:
+            md5 = file_md5(out_path)
+            variante_info = {
+                "archivo": out_name,
+                "url": f"{PUBLIC_BASE_URL}/{job_id}/{out_name}" if PUBLIC_BASE_URL else str(out_path),
+                "md5": md5,
+                "gancho": gancho_texto,
+            }
+            variantes.append(variante_info)
+            jobs[job_id]["variantes"] = variantes
+            # Notificación incremental: cada gancho listo se reporta al toque
+            notify_callback(job_id, {"estado": "parcial", "variante": variante_info})
+        else:
+            print(f"[job {job_id}] error en gancho {i} ('{gancho_texto}'): {err}", flush=True)
+            jobs[job_id].setdefault("errores_variantes", []).append(
+                {"gancho": gancho_texto, "detalle": err}
+            )
+
+    jobs[job_id]["estado"] = "listo"
+    jobs[job_id]["variantes"] = variantes
+    notify_callback(job_id, {"estado": "listo", "variantes": variantes})
+
+
 # ---------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------
@@ -268,6 +395,37 @@ def procesar():
 
     thread = threading.Thread(
         target=run_job, args=(job_id, video_url, cantidad, crf, preset), daemon=True
+    )
+    thread.start()
+
+    return jsonify({"job_id": job_id, "estado": "en_cola"})
+
+
+@app.route("/ganchos", methods=["POST"])
+def ganchos_endpoint():
+    if not check_auth(request):
+        return jsonify({"error": "no autorizado"}), 401
+
+    data = request.get_json(force=True, silent=True) or {}
+    video_url = data.get("video_url")
+    ganchos = data.get("ganchos")
+    duracion = float(data.get("duracion", 3.0))
+    font_size = int(data.get("font_size", 42))
+    crf = int(data.get("crf", 20))
+    preset = data.get("preset", "veryfast")
+
+    if not video_url:
+        return jsonify({"error": "falta video_url"}), 400
+    if not ganchos or not isinstance(ganchos, list) or not all(isinstance(g, str) and g.strip() for g in ganchos):
+        return jsonify({"error": "falta ganchos (lista de textos no vacía)"}), 400
+
+    job_id = uuid.uuid4().hex
+    jobs[job_id] = {"estado": "en_cola", "variantes": [], "error": None}
+
+    thread = threading.Thread(
+        target=run_job_ganchos,
+        args=(job_id, video_url, ganchos, duracion, font_size, crf, preset),
+        daemon=True,
     )
     thread.start()
 
