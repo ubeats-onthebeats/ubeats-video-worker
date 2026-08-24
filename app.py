@@ -57,9 +57,9 @@ def random_transform_params():
 def build_filter_chain(params):
     filters = []
 
-    if abs(params["rotate_deg"]) > 0.001:
-        rad = params["rotate_deg"] * 3.14159265 / 180
-        filters.append(f"rotate={rad}:fillcolor=black@0,crop=iw*0.98:ih*0.98")
+    # Nota: se quitó la rotación — el filtro rotate+crop duplicaba el uso de
+    # memoria en contenedores chicos (Railway starter) y causaba OOM kill.
+    # El crop/zoom + ruido + brillo ya generan huella suficientemente distinta.
 
     crop = params["crop_pct"]
     filters.append(
@@ -71,7 +71,7 @@ def build_filter_chain(params):
         f"eq=brightness={params['brightness']}:contrast={params['contrast']}:"
         f"saturation={params['saturation']}"
     )
-    filters.append(f"noise=alls={params['noise']}:allf=t")
+    filters.append(f"noise=alls={params['noise']}:allf=t+u")
 
     pts_factor = 1 / params["speed"]
     filters.append(f"setpts={pts_factor}*PTS")
@@ -85,6 +85,7 @@ def generate_variant(input_path, output_path, params, crf=20, preset="veryfast")
 
     cmd = [
         "ffmpeg", "-y",
+        "-threads", "1",  # limita picos de memoria en contenedores chicos (Railway starter)
         "-i", input_path,
         "-vf", vf,
         "-af", af,
@@ -103,7 +104,10 @@ def generate_variant(input_path, output_path, params, crf=20, preset="veryfast")
     ]
 
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    return result.returncode == 0, result.stderr.decode(errors="ignore")[-800:]
+    err_detail = result.stderr.decode(errors="ignore")[-800:]
+    if result.returncode != 0:
+        err_detail = f"[returncode={result.returncode}] {err_detail}"
+    return result.returncode == 0, err_detail
 
 
 def file_md5(path):
