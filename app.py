@@ -117,9 +117,26 @@ def file_md5(path):
 def download_video(url, dest_path):
     r = requests.get(url, stream=True, timeout=60)
     r.raise_for_status()
+
+    content_type = r.headers.get("Content-Type", "")
+    if "text/html" in content_type:
+        raise ValueError(
+            "La URL devolvió una página HTML en vez de un video. "
+            "Si es un link de Google Drive, probablemente necesita el token de "
+            "confirmación de archivos grandes (usá un link de descarga directa real, "
+            "o subí el video a un hosting simple sin esa verificación)."
+        )
+
     with open(dest_path, "wb") as f:
         for chunk in r.iter_content(chunk_size=8192):
             f.write(chunk)
+
+    # Verificación extra: el archivo tiene que pesar más que una página HTML típica
+    if dest_path.stat().st_size < 20000:
+        raise ValueError(
+            f"El archivo descargado es sospechosamente chico ({dest_path.stat().st_size} bytes) "
+            "— probablemente no es el video real."
+        )
 
 
 def notify_callback(job_id, payload):
@@ -176,7 +193,10 @@ def run_job(job_id, video_url, cantidad, crf, preset):
             # Notificación incremental: cada variante lista se reporta al toque
             notify_callback(job_id, {"estado": "parcial", "variante": variante_info})
         else:
-            print(f"[job {job_id}] error en variante {i}: {err}")
+            print(f"[job {job_id}] error en variante {i}: {err}", flush=True)
+            jobs[job_id].setdefault("errores_variantes", []).append(
+                {"variante": i, "detalle": err}
+            )
 
     jobs[job_id]["estado"] = "listo"
     jobs[job_id]["variantes"] = variantes
