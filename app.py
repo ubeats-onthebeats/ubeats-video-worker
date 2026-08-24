@@ -50,12 +50,18 @@ def random_transform_params():
         "noise": random.randint(2, 6),
         "speed": round(random.uniform(0.99, 1.01), 4),
         "rotate_deg": round(random.uniform(-0.5, 0.5), 3),
-        "bitrate_k": random.randint(3500, 6000),
+        "bitrate_k": random.randint(1800, 3200),
     }
 
 
-def build_filter_chain(params):
+def build_filter_chain(params, max_width=720):
     filters = []
+
+    # Downscale primero: el uso de memoria de libx264 y de los filtros de
+    # ruido/eq escala con la cantidad de píxeles por frame. Bajar la
+    # resolución de trabajo es la palanca más efectiva contra OOM en
+    # contenedores chicos (Railway starter con RAM limitada).
+    filters.append(f"scale='min({max_width},iw)':'-2'")
 
     # Nota: se quitó la rotación — el filtro rotate+crop duplicaba el uso de
     # memoria en contenedores chicos (Railway starter) y causaba OOM kill.
