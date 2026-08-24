@@ -7,10 +7,12 @@ RUN apt-get update && \
 
 WORKDIR /app
 
+ENV PYTHONUNBUFFERED=1
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
 
-# Railway inyecta la variable PORT automáticamente
+# Railway inyecta la variable PORT automĂĄticamente
 CMD ["python3", "app.py"]
