@@ -1,16 +1,22 @@
 FROM python:3.11-slim
 
-# FFmpeg + curl (para bajar la fuente de los ganchos) + fuente DejaVu de respaldo
+# FFmpeg + fuente DejaVu de respaldo + fuentes libres tipo Helvetica para el
+# texto de los ganchos (ver nota abajo).
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core curl && \
+    apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core fonts-urw-base35 fonts-liberation && \
     rm -rf /var/lib/apt/lists/*
 
-# Poppins ExtraBold: la fuente redondeada/gruesa usada para el texto de los
-# ganchos (se renderiza con Pillow y se superpone al video, ver build_caption_overlay()
-# en app.py). Se baja directo del repo oficial de Google Fonts.
-RUN mkdir -p /usr/share/fonts/truetype/poppins && \
-    curl -fsSL -o /usr/share/fonts/truetype/poppins/Poppins-ExtraBold.ttf \
-      https://raw.githubusercontent.com/google/fonts/main/ofl/poppins/Poppins-ExtraBold.ttf
+# Helvetica es una fuente comercial (Monotype/Linotype) que no se puede
+# distribuir dentro de la imagen. Usamos Nimbus Sans Bold (URW Base35), el
+# clon libre metric-compatible de Helvetica que trae Ghostscript/Linux desde
+# hace décadas — mismas formas y proporciones, sin problema de licencia. Si por
+# lo que sea el paquete no trae ese archivo, cae a Liberation Sans Bold (el
+# equivalente libre de Arial, visualmente casi idéntico a Helvetica también).
+RUN mkdir -p /usr/share/fonts/truetype/helvetica && \
+    ( f=$(find /usr/share/fonts -iname "NimbusSans-Bold*" | head -1); [ -n "$f" ] && cp "$f" /usr/share/fonts/truetype/helvetica/Helvetica-Bold.ttf ) ; \
+    if [ ! -f /usr/share/fonts/truetype/helvetica/Helvetica-Bold.ttf ]; then \
+      f=$(find /usr/share/fonts -iname "LiberationSans-Bold*" | head -1); cp "$f" /usr/share/fonts/truetype/helvetica/Helvetica-Bold.ttf; \
+    fi
 
 WORKDIR /app
 

@@ -29,7 +29,7 @@ FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 # build_caption_overlay) en vez de con el filtro drawtext de ffmpeg, porque
 # drawtext solo puede dibujar UN rectángulo recto que cubre todo el bloque de
 # texto — acá queremos una caja negra con esquinas redondeadas por línea.
-CAPTION_FONT_PATH = "/usr/share/fonts/truetype/poppins/Poppins-ExtraBold.ttf"
+CAPTION_FONT_PATH = "/usr/share/fonts/truetype/helvetica/Helvetica-Bold.ttf"
 
 app = Flask(__name__)
 
@@ -158,7 +158,7 @@ def wrap_text(text, max_chars_per_line=16):
 def build_caption_overlay(
     gancho_texto, out_path,
     font_size=54, max_chars_per_line=19,
-    text_color=(255, 255, 255, 255), box_color=(0, 0, 0, 178),
+    text_color=(255, 255, 255, 255), box_color=(0, 0, 0, 255),
     pad_x=40, pad_y=26, line_gap=6, corner_radius=20,
 ):
     """Renderiza el gancho como PNG transparente: una caja negra con esquinas
