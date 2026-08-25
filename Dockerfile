@@ -13,9 +13,9 @@ RUN apt-get update && \
 # lo que sea el paquete no trae ese archivo, cae a Liberation Sans Bold (el
 # equivalente libre de Arial, visualmente casi idéntico a Helvetica también).
 RUN mkdir -p /usr/share/fonts/truetype/helvetica && \
-    ( f=$(find /usr/share/fonts -iname "NimbusSans-Bold*" | head -1); [ -n "$f" ] && cp "$f" /usr/share/fonts/truetype/helvetica/Helvetica-Bold.ttf ) ; \
+    ( f=$(find /usr/share/fonts -iname "NimbusSans-Bold.*" | head -1); [ -n "$f" ] && cp "$f" /usr/share/fonts/truetype/helvetica/Helvetica-Bold.ttf ) ; \
     if [ ! -f /usr/share/fonts/truetype/helvetica/Helvetica-Bold.ttf ]; then \
-      f=$(find /usr/share/fonts -iname "LiberationSans-Bold*" | head -1); cp "$f" /usr/share/fonts/truetype/helvetica/Helvetica-Bold.ttf; \
+      f=$(find /usr/share/fonts -iname "LiberationSans-Bold.*" | head -1); cp "$f" /usr/share/fonts/truetype/helvetica/Helvetica-Bold.ttf; \
     fi
 
 WORKDIR /app
